@@ -90,6 +90,7 @@ static wifi_error wifi_configure_nd_offload(wifi_interface_handle iface,
                                             u8 enable);
 wifi_error wifi_get_wake_reason_stats(wifi_interface_handle iface,
                              WLAN_DRIVER_WAKE_REASON_CNT *wifi_wake_reason_cnt);
+static int wifi_is_nan_ext_cmd_supported(wifi_interface_handle handle);
 
 /* Initialize/Cleanup */
 
@@ -460,6 +461,7 @@ wifi_error init_wifi_vendor_hal_func_table(wifi_hal_fn *fn) {
     //fn->wifi_set_qpower = wifi_set_qpower;
 #ifdef WCNSS_QTI_AOSP
     fn->wifi_add_or_remove_virtual_intf = wifi_add_or_remove_virtual_intf;
+    fn->wifi_set_latency_level = wifi_set_latency_level;
 #endif
 
     return WIFI_SUCCESS;
@@ -735,6 +737,14 @@ wifi_error wifi_initialize(wifi_handle *handle)
     ALOGV("Initialized Wifi HAL Successfully; vendor cmd = %d Supported"
             " features : %x", NL80211_CMD_VENDOR, info->supported_feature_set);
 
+    if (wifi_is_nan_ext_cmd_supported(iface_handle))
+        info->support_nan_ext_cmd = true;
+    else
+        info->support_nan_ext_cmd = false;
+
+    ALOGV("support_nan_ext_cmd is %d",
+          info->support_nan_ext_cmd);
+
 cld80211_cleanup:
     if (status != 0 || ret != WIFI_SUCCESS) {
         ret = WIFI_ERROR_UNKNOWN;
@@ -879,9 +889,11 @@ void wifi_cleanup(wifi_handle handle, wifi_cleaned_up_handler handler)
 
     hal_info *info = getHalInfo(handle);
     info->cleaned_up_handler = handler;
-    info->clean_up = true;
 
     TEMP_FAILURE_RETRY(write(info->exit_sockets[0], "E", 1));
+
+    // Ensure wifi_event_loop() exits by setting clean_up to true.
+    info->clean_up = true;
     ALOGI("Sent msg on exit sock to unblock poll()");
 }
 
@@ -910,6 +922,19 @@ static void internal_event_handler(wifi_handle handle, int events,
     } else {
         ALOGE("Unknown event - %0x", events);
     }
+}
+
+static bool exit_event_handler(int fd) {
+    char buf[4];
+    memset(buf, 0, sizeof(buf));
+
+    TEMP_FAILURE_RETRY(read(fd, buf, sizeof(buf)));
+    ALOGI("exit_event_handler, buf=%s", buf);
+    if (strncmp(buf, "E", 1) == 0) {
+       return true;
+    }
+
+    return false;
 }
 
 /* Run event handler */
@@ -951,10 +976,16 @@ void wifi_event_loop(wifi_handle handle)
             if (pfd[1].revents & (POLLIN | POLLHUP | POLLERR)) {
                 internal_event_handler(handle, pfd[1].revents, info->user_sock);
             }
+            if (pfd[2].revents & POLLIN) {
+                if (exit_event_handler(pfd[2].fd)) {
+                    break;
+                }
+            }
         }
         rb_timerhandler(info);
     } while (!info->clean_up);
     internal_cleaned_up_handler(handle);
+    ALOGI("wifi_event_loop() exits success");
 }
 
 static int user_sock_message_handler(nl_msg *msg, void *arg)
@@ -1961,4 +1992,99 @@ static wifi_error wifi_read_packet_filter(wifi_interface_handle handle,
 
     delete vCommand;
     return ret;
+}
+
+class GetSupportedVendorCmd : public WifiCommand
+{
+private:
+    u32 mVendorCmds[256];
+    int mNumOfVendorCmds;
+
+public:
+    GetSupportedVendorCmd(wifi_handle handle) : WifiCommand(handle, 0)
+    {
+        mNumOfVendorCmds = 0;
+        memset(mVendorCmds, 0, 256);
+    }
+
+    virtual wifi_error create() {
+        int nl80211_id = genl_ctrl_resolve(mInfo->cmd_sock, "nl80211");
+        wifi_error ret = mMsg.create(nl80211_id, NL80211_CMD_GET_WIPHY, NLM_F_DUMP, 0);
+
+        return ret;
+    }
+
+    virtual wifi_error requestResponse() {
+        return WifiCommand::requestResponse(mMsg);
+    }
+    virtual wifi_error set_iface_id(const char* name) {
+        unsigned ifindex = if_nametoindex(name);
+        return mMsg.set_iface_id(ifindex);
+    }
+
+    virtual int handleResponse(WifiEvent& reply) {
+        struct nlattr **tb = reply.attributes();
+
+        if (tb[NL80211_ATTR_VENDOR_DATA]) {
+            struct nlattr *nl;
+            int rem, i = 0;
+
+            for_each_attr(nl, tb[NL80211_ATTR_VENDOR_DATA], rem) {
+                struct nl80211_vendor_cmd_info *vinfo;
+                if (nla_len(nl) != sizeof(*vinfo)) {
+                    ALOGE("Unexpected vendor data info found in attribute");
+                    continue;
+                }
+                vinfo = (struct nl80211_vendor_cmd_info *)nla_data(nl);
+                if (vinfo->vendor_id == OUI_QCA) {
+                    mVendorCmds[i] = vinfo->subcmd;
+                    i++;
+                }
+            }
+            mNumOfVendorCmds = i;
+        }
+        return NL_SKIP;
+    }
+
+    int isVendorCmdSupported(u32 cmdId) {
+        int i, ret;
+
+        ret = 0;
+        for (i = 0; i < mNumOfVendorCmds; i++) {
+            if (cmdId == mVendorCmds[i]) {
+                ret = 1;
+                break;
+            }
+        }
+
+        return ret;
+    }
+};
+
+static int wifi_is_nan_ext_cmd_supported(wifi_interface_handle iface_handle)
+{
+    wifi_error ret;
+    wifi_handle handle = getWifiHandle(iface_handle);
+    interface_info *info = getIfaceInfo(iface_handle);
+    GetSupportedVendorCmd cmd(handle);
+
+    ret = cmd.create();
+    if (ret != WIFI_SUCCESS) {
+        ALOGE("%s: create command failed", __func__);
+        return 0;
+    }
+
+    ret = cmd.set_iface_id(info->name);
+    if (ret != WIFI_SUCCESS) {
+        ALOGE("%s: set iface id failed", __func__);
+        return 0;
+    }
+
+    ret = cmd.requestResponse();
+    if (ret != WIFI_SUCCESS) {
+        ALOGE("Failed to query nan_ext command support, ret=%d", ret);
+        return 0;
+    } else {
+        return cmd.isVendorCmdSupported(QCA_NL80211_VENDOR_SUBCMD_NAN_EXT);
+    }
 }

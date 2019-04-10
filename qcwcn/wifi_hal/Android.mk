@@ -23,7 +23,7 @@ ifeq ($(TARGET_BUILD_VARIANT),eng)
 LOCAL_CFLAGS += "-DLOG_NDEBUG=0"
 endif
 
-ifneq ($(TARGET_USES_AOSP), true)
+ifneq ($(TARGET_USES_AOSP_FOR_WLAN), true)
 LOCAL_CFLAGS += -DWCNSS_QTI_AOSP
 endif
 
@@ -39,6 +39,8 @@ LOCAL_C_INCLUDES += \
 	external/wpa_supplicant_8/src/drivers \
 	$(TARGET_OUT_HEADERS)/libwpa_client \
 	$(TARGET_OUT_HEADERS)/cld80211-lib
+
+LOCAL_ADDITIONAL_DEPENDENCIES := $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr
 
 LOCAL_SRC_FILES := \
 	wifi_hal.cpp \
@@ -91,7 +93,7 @@ ifeq ($(TARGET_BUILD_VARIANT),userdebug)
 LOCAL_CFLAGS += "-DLOG_NDEBUG=0"
 endif
 
-ifneq ($(TARGET_USES_AOSP), true)
+ifneq ($(TARGET_USES_AOSP_FOR_WLAN), true)
 LOCAL_CFLAGS += -DWCNSS_QTI_AOSP
 endif
 
@@ -105,6 +107,8 @@ LOCAL_C_INCLUDES += \
 	external/wpa_supplicant_8/src/drivers \
 	$(TARGET_OUT_HEADERS)/libwpa_client \
 	$(TARGET_OUT_HEADERS)/cld80211-lib
+
+LOCAL_ADDITIONAL_DEPENDENCIES := $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr
 
 LOCAL_SRC_FILES := \
 	wifi_hal.cpp \
