@@ -144,7 +144,7 @@ wifi_error wifi_get_wake_reason_stats(wifi_interface_handle iface,
 static int wifi_is_nan_ext_cmd_supported(wifi_interface_handle handle);
 
 wifi_error
-	wifi_init_tcp_param_change_event_handler(wifi_interface_handle iface);
+    wifi_init_tcp_param_change_event_handler(wifi_interface_handle iface);
 
 /* Initialize/Cleanup */
 
@@ -412,6 +412,28 @@ static wifi_error wifi_get_capabilities(wifi_interface_handle handle)
     ret = wifihalGeneric->wifiGetCapabilities(handle);
 
     delete wifihalGeneric;
+    return ret;
+}
+
+static wifi_error wifi_get_sar_version(wifi_interface_handle handle)
+{
+    wifi_error ret;
+    wifi_handle wifiHandle = getWifiHandle(handle);
+
+    WifihalGeneric *sarVersion = new WifihalGeneric(
+                            wifiHandle,
+                            0,
+                            OUI_QCA,
+                            QCA_NL80211_VENDOR_SUBCMD_GET_SAR_CAPABILITY);
+    if (!sarVersion) {
+        ALOGE("%s: Failed to create object of WifihalGeneric class", __FUNCTION__);
+        return WIFI_ERROR_OUT_OF_MEMORY;
+    }
+
+
+    ret = sarVersion->getSarVersion(handle);
+
+    delete sarVersion;
     return ret;
 }
 
@@ -903,9 +925,8 @@ wifi_error wifi_get_usable_channels(wifi_handle handle, u32 band_mask,
     /* Add the vendor specific attributes for the NL command. */
     nl_data = cmd->attr_start(NL80211_ATTR_VENDOR_DATA);
     if (!nl_data) {
-         ret = WIFI_ERROR_OUT_OF_MEMORY;
-         ALOGE("%s: failed attr_start for VENDOR_DATA due to error: (%d)",
-               __FUNCTION__, ret);
+         ALOGE("%s: failed attr_start for VENDOR_DATA due to error",
+               __FUNCTION__);
          goto cleanup;
     }
 
@@ -1095,7 +1116,7 @@ static int wifi_get_iface_id(hal_info *info, const char *iface)
 
 wifi_error wifi_initialize(wifi_handle *handle)
 {
-    wifi_error ret = WIFI_SUCCESS;
+    wifi_error ret = WIFI_ERROR_UNKNOWN;
     wifi_interface_handle iface_handle;
     struct nl_sock *cmd_sock = NULL;
     struct nl_sock *event_sock = NULL;
@@ -1270,6 +1291,7 @@ wifi_error wifi_initialize(wifi_handle *handle)
             free(info->interfaces[i]);
         }
         ALOGE("%s no iface with wlan0", __func__);
+        ret = WIFI_ERROR_UNKNOWN;
         goto unload;
     }
     iface_handle = (wifi_interface_handle)info->interfaces[index];
@@ -1395,6 +1417,13 @@ wifi_error wifi_initialize(wifi_handle *handle)
     ALOGV("support_nan_ext_cmd is %d",
           info->support_nan_ext_cmd);
 
+    ret = wifi_get_sar_version(iface_handle);
+    if (ret != WIFI_SUCCESS) {
+        ALOGE("Failed to  get  SAR Version, Setting it to default.");
+        info->sar_version = QCA_WLAN_VENDOR_SAR_VERSION_1;
+        ret = WIFI_SUCCESS;
+    }
+
 cld80211_cleanup:
     if (status != 0 || ret != WIFI_SUCCESS) {
         ret = WIFI_ERROR_UNKNOWN;
@@ -1419,7 +1448,7 @@ unload:
             cleanupGscanHandlers(info);
             cleanupRSSIMonitorHandler(info);
             cleanupRadioHandler(info);
-	    cleanupTCPParamCommand(info);
+            cleanupTCPParamCommand(info);
             free(info->event_cb);
             if (info->driver_supported_features.flags) {
                 free(info->driver_supported_features.flags);
@@ -1452,14 +1481,12 @@ static int wifi_update_driver_state(const char *state) {
     if (fd < 0) {
         ALOGE("Failed to open driver state control param at %s",
               WIFI_DRIVER_STATE_CTRL_PARAM);
-        close(fd);
         return -1;
     }
     len = strlen(state) + 1;
     if (TEMP_FAILURE_RETRY(write(fd, state, len)) != len) {
         ALOGE("Failed to write driver state control param at %s",
               WIFI_DRIVER_STATE_CTRL_PARAM);
-        close(fd);
         ret = -1;
     }
     close(fd);
@@ -2494,8 +2521,10 @@ wifi_error wifi_get_concurrency_matrix(wifi_interface_handle handle,
 
     /* Add the vendor specific attributes for the NL command. */
     nlData = vCommand->attr_start(NL80211_ATTR_VENDOR_DATA);
-    if (!nlData)
+    if (!nlData){
+        ret = WIFI_ERROR_UNKNOWN;
         goto cleanup;
+    }
 
     ret = vCommand->put_u32(
           QCA_WLAN_VENDOR_ATTR_GET_CONCURRENCY_MATRIX_CONFIG_PARAM_SET_SIZE_MAX,
@@ -2549,8 +2578,10 @@ wifi_error wifi_set_nodfs_flag(wifi_interface_handle handle, u32 nodfs)
 
     /* Add the vendor specific attributes for the NL command. */
     nlData = vCommand->attr_start(NL80211_ATTR_VENDOR_DATA);
-    if (!nlData)
+    if (!nlData){
+        ret = WIFI_ERROR_UNKNOWN;
         goto cleanup;
+    }
 
     /* Add the fixed part of the mac_oui to the nl command */
     ret = vCommand->put_u32(QCA_WLAN_VENDOR_ATTR_SET_NO_DFS_FLAG, nodfs);
@@ -2597,8 +2628,10 @@ wifi_error wifi_start_sending_offloaded_packet(wifi_request_id id,
 
     /* Add the vendor specific attributes for the NL command. */
     nlData = vCommand->attr_start(NL80211_ATTR_VENDOR_DATA);
-    if (!nlData)
+    if (!nlData){
+        ret = WIFI_ERROR_UNKNOWN;
         goto cleanup;
+    }
 
     ret = vCommand->put_u32(
             QCA_WLAN_VENDOR_ATTR_OFFLOADED_PACKETS_SENDING_CONTROL,
@@ -2670,8 +2703,10 @@ wifi_error wifi_stop_sending_offloaded_packet(wifi_request_id id,
 
     /* Add the vendor specific attributes for the NL command. */
     nlData = vCommand->attr_start(NL80211_ATTR_VENDOR_DATA);
-    if (!nlData)
+    if (!nlData){
+        ret = WIFI_ERROR_UNKNOWN;
         goto cleanup;
+    }
 
     ret = vCommand->put_u32(
             QCA_WLAN_VENDOR_ATTR_OFFLOADED_PACKETS_SENDING_CONTROL,
@@ -2726,8 +2761,10 @@ static wifi_error wifi_set_packet_filter(wifi_interface_handle iface,
 
         /* Add the vendor specific attributes for the NL command. */
         nlData = vCommand->attr_start(NL80211_ATTR_VENDOR_DATA);
-        if (!nlData)
+        if (!nlData){
+            ret = WIFI_ERROR_UNKNOWN;
             goto cleanup;
+        }
 
         ret = vCommand->put_u32(QCA_WLAN_VENDOR_ATTR_PACKET_FILTER_SUB_CMD,
                                 QCA_WLAN_SET_PACKET_FILTER);
@@ -2816,8 +2853,10 @@ static wifi_error wifi_get_packet_filter_capabilities(
 
     /* Add the vendor specific attributes for the NL command. */
     nlData = vCommand->attr_start(NL80211_ATTR_VENDOR_DATA);
-    if (!nlData)
+    if (!nlData){
+        ret = WIFI_ERROR_UNKNOWN;
         goto cleanup;
+    }
 
     ret = vCommand->put_u32(QCA_WLAN_VENDOR_ATTR_PACKET_FILTER_SUB_CMD,
                             QCA_WLAN_GET_PACKET_FILTER);
@@ -2868,8 +2907,10 @@ static wifi_error wifi_configure_nd_offload(wifi_interface_handle iface,
 
     /* Add the vendor specific attributes for the NL command. */
     nlData = vCommand->attr_start(NL80211_ATTR_VENDOR_DATA);
-    if (!nlData)
+    if (!nlData){
+        ret = WIFI_ERROR_UNKNOWN;
         goto cleanup;
+    }
 
     ret = vCommand->put_u8(QCA_WLAN_VENDOR_ATTR_ND_OFFLOAD_FLAG, enable);
     if (ret != WIFI_SUCCESS)
@@ -2937,8 +2978,10 @@ wifi_error wifi_write_packet_filter(wifi_interface_handle iface,
 
         /* Add the vendor specific attributes for the NL command. */
         nlData = vCommand->attr_start(NL80211_ATTR_VENDOR_DATA);
-        if (!nlData)
+        if (!nlData){
+             ret = WIFI_ERROR_UNKNOWN;
              goto cleanup;
+        }
 
         ret = vCommand->put_u32(QCA_WLAN_VENDOR_ATTR_PACKET_FILTER_SUB_CMD,
                                  QCA_WLAN_WRITE_PACKET_FILTER);
@@ -2976,7 +3019,7 @@ wifi_error wifi_write_packet_filter(wifi_interface_handle iface,
         vCommand->attr_end(nlData);
 
         ret = vCommand->requestResponse();
-       if (ret != WIFI_SUCCESS) {
+        if (ret != WIFI_SUCCESS) {
             ALOGE("%s: requestResponse Error:%d",__func__, ret);
             goto cleanup;
         }
@@ -3015,8 +3058,10 @@ wifi_error wifi_enable_packet_filter(wifi_interface_handle handle,
     }
     /* Add the vendor specific attributes for the NL command. */
     nlData = vCommand->attr_start(NL80211_ATTR_VENDOR_DATA);
-    if (!nlData)
+    if (!nlData){
+        ret = WIFI_ERROR_UNKNOWN;
         goto cleanup;
+    }
 
     subcmd = enable ? QCA_WLAN_ENABLE_PACKET_FILTER :
                       QCA_WLAN_DISABLE_PACKET_FILTER;
@@ -3062,7 +3107,7 @@ cleanup:
 static wifi_error wifi_read_packet_filter(wifi_interface_handle handle,
                                           u32 src_offset, u8 *host_dst, u32 length)
 {
-    wifi_error ret = WIFI_SUCCESS;
+    wifi_error ret = WIFI_ERROR_UNKNOWN;
     struct nlattr *nlData;
     WifihalGeneric *vCommand = NULL;
     interface_info *ifaceInfo = getIfaceInfo(handle);
@@ -3317,8 +3362,10 @@ wifi_error wifi_get_radar_history(wifi_interface_handle handle,
 
     /* Add the vendor specific attributes for the NL command. */
     nlData = vCommand->attr_start(NL80211_ATTR_VENDOR_DATA);
-    if (!nlData)
+    if (!nlData){
+        ret = WIFI_ERROR_UNKNOWN;
         goto cleanup;
+    }
 
     vCommand->attr_end(nlData);
 
